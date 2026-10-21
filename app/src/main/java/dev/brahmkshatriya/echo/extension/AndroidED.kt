@@ -59,9 +59,12 @@ class AndroidED : EDExtension() {
     override suspend fun selectSources(
         context: DownloadContext, server: Streamable.Media.Server
     ): List<Streamable.Source> {
-        val sources = mutableListOf<Streamable.Source>()
-        sources.add(server.sources.select(setQuality))
-        return sources
+        // The bundled FFmpeg can't read WebM/Opus, so prefer MP4/AAC streams when offered.
+        val unsupported = Regex("webm|opus|matroska", RegexOption.IGNORE_CASE)
+        val readable = server.sources.filter { src ->
+            src.title?.let { !unsupported.containsMatchIn(it) } ?: true
+        }
+        return listOf(readable.ifEmpty { server.sources }.select(setQuality))
     }
 
     private val inputStreamDownload by lazy { InputStreamDownload() }

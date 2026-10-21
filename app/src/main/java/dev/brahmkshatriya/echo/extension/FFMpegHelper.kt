@@ -41,7 +41,10 @@ object FFMpegHelper {
             "-v error -show_entries format=format_name -of default=noprint_wrappers=1:nokey=1 \"${file.absolutePath}\""
 
         val session = runCatching { executeProbe(ffprobeCommand) }.getOrElse {
-            return "mp3"
+            throw java.io.IOException(
+                "Downloaded file isn't in a format EchoDown can process " +
+                    "(MP4/M4A, MP3, OGG or FLAC). The stream may be WebM/Opus.", it
+            )
         }
 
         return when (session.output?.trim()?.split(",")?.firstOrNull()) {
