@@ -1,0 +1,38 @@
+name: Build EchoDown
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # version name/code are read from git history
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APKs
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Rename APKs to .eapk
+        run: |
+          mkdir -p out
+          for f in app/build/outputs/apk/debug/*.apk; do
+            cp "$f" "out/$(basename "${f%.apk}").eapk"
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: echodown-eapk
+          path: out/*.eapk
