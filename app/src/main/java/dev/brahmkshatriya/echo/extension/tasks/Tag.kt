@@ -134,14 +134,18 @@ class Tag(
     ): File {
         val parentFolderName = context.context?.title
         val sanitizedParent = illegalReplace(parentFolderName.orEmpty())
+        val base = androidED.folderStructure.trim().trimEnd('/').ifEmpty { "Echo" }
         val folder = if (sanitizedParent.isNotBlank()) {
-            "${androidED.folderStructure}$sanitizedParent"
+            "$base/$sanitizedParent"
         } else if (androidED.albumFolder) {
-            "${androidED.folderStructure}${illegalReplace(track.album?.title.orEmpty())}"
+            "$base/${illegalReplace(track.album?.title.orEmpty())}"
         } else {
-            "Echo/"
+            base
         }
         val targetDirectory = File(downloadsDir, folder).apply { mkdirs() }
+        if (!targetDirectory.isDirectory || !targetDirectory.canWrite()) {
+            throw java.io.IOException("Cannot write to ${targetDirectory.absolutePath} (check storage permission)")
+        }
         var targetFile = File(targetDirectory, preFile.name)
         var count = 0
         while (targetFile.exists()) {
@@ -167,16 +171,16 @@ class Tag(
         val outputFile = File(file.parent, "temp_${file.name}")
 
         val mdOrder = "track=\"${context.sortOrder ?: track.albumOrderNumber ?: 0}\""
-        val mdTitle = "title=\"${illegalReplace(track.title)}\""
-        val mdArtist = "artist=\"${track.artists.joinToString(", ") { it.name }}\""
-        val mdAlbumArtist = "album_artist=\"${album?.artists.orEmpty().joinToString(", ") { illegalReplace(it.name)  }}\""
+        val mdTitle = "title=\"${esc(track.title)}\""
+        val mdArtist = "artist=\"${esc(track.artists.joinToString(", ") { it.name })}\""
+        val mdAlbumArtist = "album_artist=\"${esc(album?.artists.orEmpty().joinToString(", ") { it.name })}\""
         val mdAlbumYear = if(fileExtension == "flac" || fileExtension == "mp4") "year=\"${track.releaseDate}\"" else "date=\"${track.releaseDate}\""
-        val mdAlbum = "album=\"${illegalReplace(track.album?.title.orEmpty())}\""
-        val mdGenre = "genre=\"${track.genres.joinToString(", ") { it }}\""
+        val mdAlbum = "album=\"${esc(track.album?.title.orEmpty())}\""
+        val mdGenre = "genre=\"${esc(track.genres.joinToString(", "))}\""
         val mdDisc =  "discnumber=\"${track.albumDiscNumber}\""
         val mdIsrc = "isrc=\"${track.isrc}\""
         val mdServiceProvider = "service_provider=Echo"
-        val mdServiceName = "service_name=\"$extName\""
+        val mdServiceName = "service_name=\"${esc(extName)}\""
 
         val mdCoverTitle = "title=\"Album cover\""
         val medCoverComment = "comment=\"Cover (front)\""
@@ -247,7 +251,10 @@ class Tag(
         }
 
         FFMpegHelper.execute(cmd)
-        if (file.delete()) outputFile.renameTo(file)
+        if (file.delete() && !outputFile.renameTo(file)) {
+            outputFile.copyTo(file, overwrite = true)
+            outputFile.delete()
+        }
 
         coverFile?.delete()
         return file
@@ -388,6 +395,9 @@ class Tag(
     }
 
     companion object {
+        // Escape backslashes and quotes for values inside "..." in the FFmpeg command.
+        private fun esc(v: String) = v.replace("\\", "\\\\").replace("\"", "\\\"")
+
         private val albumCache = LruCache<String, Album>(50)
 
         private const val TIME_FORMAT = "[%02d:%02d.%02d]"

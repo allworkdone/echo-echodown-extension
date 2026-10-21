@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 
 class HttpDownload {
-    private val receiveFlow = MutableStateFlow(0L)
 
     suspend fun httpDownload(
         file: File,
@@ -16,9 +15,12 @@ class HttpDownload {
         source: Streamable.Source.Http,
     ): File {
         val isFFmpeg = source.type != Streamable.SourceType.Progressive
-        val result = if (isFFmpeg) ffmpegDownload(file, source, progressFlow) else okHttpDownload(file, source, progressFlow)
-        result.getOrElse {
+        try {
+            if (isFFmpeg) ffmpegDownload(file, source, progressFlow)
+            else okHttpDownload(file, source.request, progressFlow, MutableStateFlow(0L))
+        } catch (e: Throwable) {
             file.delete()
+            throw e // surface the real error instead of returning a deleted file
         }
         return file
     }
@@ -27,13 +29,17 @@ class HttpDownload {
         file: File,
         source: Streamable.Source.Http,
         progressFlow: MutableStateFlow<Progress>
-    ): Result<File> = runCatching {
+    ): File {
         if (file.exists()) file.delete()
 
-        val headers = source.request.headers.entries.takeIf { it.isNotEmpty() }
-            ?.joinToString("\r\n") { "${it.key}: ${it.value}" }.orEmpty()
+        // Each header line must end with CRLF; escape quotes for the command line.
+        val headers = source.request.headers.entries.joinToString("") {
+            "${it.key}: ${it.value}\r\n"
+        }.replace("\"", "\\\"")
 
         val ffmpegCommand = buildString {
+            // Fail after 15 s without data instead of hanging forever.
+            append("-rw_timeout 15000000 ")
             if (headers.isNotEmpty()) append("-headers \"$headers\" ")
             append("-extension_picky 0 ")
             append("-i \"${source.request.url}\" ")
@@ -42,31 +48,28 @@ class HttpDownload {
         }
         progressFlow.emit(Progress())
         var nextIsDuration = false
+        var totalMs = 0L
         FFMpegHelper.execute(ffmpegCommand, {
             it ?: return@execute
             if (nextIsDuration) {
-                val duration = durationToTime(it) ?: 0L
-                progressFlow.tryEmit(Progress(progress =  duration))
+                totalMs = durationToTime(it) ?: totalMs
+                progressFlow.tryEmit(Progress(size = totalMs))
             }
             nextIsDuration = it.contains("Duration:")
         }) {
-            progressFlow.tryEmit(Progress(size = it.size, progress =  it.time.toLong(), speed = it.bitrate.toLong()))
+            // size = total duration, progress = elapsed time, both in ms
+            progressFlow.tryEmit(Progress(size = totalMs, progress = it.time.toLong()))
         }
-        file
+        if (!file.exists() || file.length() == 0L) {
+            throw IllegalStateException("FFmpeg produced no output for ${source.request.url}")
+        }
+        return file
     }
 
     private fun durationToTime(it: String): Long? {
         val match = DURATION_REGEX.find(it) ?: return null
-        val (hours, minutes, seconds, millis) = match.destructured
-        return (hours.toLong() * 3600 + minutes.toLong() * 60 + seconds.toLong()) * 1000 + millis.toLong()
-    }
-
-    private suspend fun okHttpDownload(
-        file: File,
-        source: Streamable.Source.Http,
-        progressFlow: MutableStateFlow<Progress>
-    ) = runCatching {
-        okHttpDownload(file, source.request, progressFlow, receiveFlow)
+        val (hours, minutes, seconds, centis) = match.destructured
+        return (hours.toLong() * 3600 + minutes.toLong() * 60 + seconds.toLong()) * 1000 + centis.toLong() * 10
     }
 
     companion object {

@@ -19,9 +19,12 @@ import dev.brahmkshatriya.echo.extension.downloaders.HttpDownload
 import dev.brahmkshatriya.echo.extension.downloaders.InputStreamDownload
 import dev.brahmkshatriya.echo.extension.tasks.Merge
 import dev.brahmkshatriya.echo.extension.tasks.Tag
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 @SuppressLint("PrivateApi")
 class AndroidED : EDExtension() {
@@ -64,22 +67,29 @@ class AndroidED : EDExtension() {
     private val inputStreamDownload by lazy { InputStreamDownload() }
     private val httpDownload by lazy { HttpDownload() }
 
-    private var isVideo: Boolean = false
+    // Keyed per track so concurrent downloads don't overwrite each other.
+    private val videoFlags = ConcurrentHashMap<String, Boolean>()
+    private fun DownloadContext.key() = "$extensionId:${track.id}"
 
     override suspend fun download(
         progressFlow: MutableStateFlow<Progress>,
         context: DownloadContext,
         source: Streamable.Source
     ): File {
-        if (disabledExt.contains(context.extensionId)) {
+        val disabled = disabledExt.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (context.extensionId in disabled) {
             throw ClientException.NotSupported("${context.extensionId} download currently")
         }
-        isVideo = source.isVideo
+        val isVideo = source.isVideo
+        videoFlags[context.key()] = isVideo
         val file = getDownloadDir(context)
         return when (source) {
             is Streamable.Source.Raw -> {
                 val preFile = File(file.parent, "${source.hashCode()}.${if (isVideo) "mp4" else "mp3"}")
-                val streamProvider = source.streamProvider?.provide(0, -1)
+                // Providers may do network work, so keep it off the caller's thread.
+                val streamProvider = withContext(Dispatchers.IO) {
+                    source.streamProvider?.provide(0, -1)
+                }
                 if (streamProvider != null) {
                     inputStreamDownload.inputStreamDownload(
                         preFile,
@@ -119,7 +129,9 @@ class AndroidED : EDExtension() {
         progressFlow: MutableStateFlow<Progress>,
         context: DownloadContext,
         files: List<File>
-    ): File = merge.merge(progressFlow, context, files, trackNum, isVideo)
+    ): File = merge.merge(
+        progressFlow, context, files, trackNum, videoFlags.remove(context.key()) ?: false
+    )
 
     override suspend fun tag(
         progressFlow: MutableStateFlow<Progress>,
@@ -287,6 +299,7 @@ class AndroidED : EDExtension() {
 
         // For Shivam: Copy my homework but don't make it obvious
         private fun <E> List<E>.selectQuality(setQuality: String, quality: (E) -> Int): E {
+            if (isEmpty()) throw ClientException.NotSupported("No downloadable streams for this track")
             return when (setQuality) {
                 in "0" -> this.maxByOrNull { quality(it) } ?: first()
                 in "1" -> sortedBy { quality(it) }[size / 2]

@@ -7,7 +7,6 @@ import java.io.File
 import java.io.InputStream
 
 class InputStreamDownload {
-    private val receiveFlow = MutableStateFlow(0L)
 
     suspend fun inputStreamDownload(
         file: File,
@@ -15,10 +14,13 @@ class InputStreamDownload {
         stream: InputStream,
         totalBytes: Long
     ): File {
-        runCatching {
+        // Per-download flow so concurrent downloads don't overwrite each other.
+        val receiveFlow = MutableStateFlow(0L)
+        try {
             download(file, stream, totalBytes, progressFlow, receiveFlow)
-        }.getOrElse {
+        } catch (e: Throwable) {
             file.delete()
+            throw e // surface the real error instead of returning a deleted file
         }
         return file
     }

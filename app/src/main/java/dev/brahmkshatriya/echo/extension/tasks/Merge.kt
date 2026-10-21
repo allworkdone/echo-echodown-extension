@@ -43,12 +43,17 @@ class Merge {
             var uniqueFile = File(directory, uniqueName)
             var counter = 1
 
-            while (!file.renameTo(uniqueFile)) {
+            while (uniqueFile.exists()) {
                 uniqueName = "$baseName ($counter).$extension"
                 uniqueFile = File(directory, uniqueName)
                 counter++
             }
 
+            // Bounded: fall back to copy + delete instead of looping forever.
+            if (!file.renameTo(uniqueFile)) {
+                file.copyTo(uniqueFile, overwrite = true)
+                file.delete()
+            }
             return uniqueFile
         }
     }
